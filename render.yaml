@@ -10,7 +10,7 @@
 # you none of those - a function per request, no shared memory, no long-lived socket.
 services:
   - type: web
-    name: ammo-per-click-server
+    name: fist-per-click-server
     runtime: node
     plan: free
     # Closest Render region to Sri Lanka and South Asia. Every player's input crosses
