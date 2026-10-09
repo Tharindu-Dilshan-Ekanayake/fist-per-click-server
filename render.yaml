@@ -1,0 +1,39 @@
+# Render Blueprint: the server's deployment, kept next to the code that it deploys.
+#
+# Point Render at this repo as a Blueprint and it creates the service from this file
+# rather than from settings typed into a dashboard, which means the deployment is
+# reviewable, diffable, and the same every time.
+#
+# Why Render and not Vercel: this is a Colyseus server. It holds a WebSocket open for
+# every player for as long as they play, it keeps every lobby in process memory (see
+# src/lobbies.js), and it runs a room loop between requests. Serverless platforms give
+# you none of those - a function per request, no shared memory, no long-lived socket.
+services:
+  - type: web
+    name: ammo-per-click-server
+    runtime: node
+    plan: free
+    # Closest Render region to Sri Lanka and South Asia. Every player's input crosses
+    # this link twice, so the nearest region is worth more here than anywhere else.
+    region: singapore
+    branch: main
+
+    # `ci`, not `install`: installs exactly what package-lock.json pins, and wipes
+    # node_modules first. `--omit=dev` leaves out nodemon, which only `npm run dev`
+    # ever needs.
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+
+    # Render waits for this to answer 200 before it sends the new deploy any traffic.
+    healthCheckPath: /api/health
+
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      # The game is served from https://clicperpower.netlify.app, and that origin is
+      # refused until it is listed here. Set in the Render dashboard rather than in
+      # this file - that is what `sync: false` asks for - because Netlify branch and
+      # preview builds each get their own origin and the list changes more often than
+      # the deployment does.
+      - key: ALLOWED_ORIGINS
+        sync: false

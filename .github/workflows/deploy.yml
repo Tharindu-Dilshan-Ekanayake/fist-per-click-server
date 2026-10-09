@@ -1,0 +1,67 @@
+# Builds the server into a Docker image and rolls it out on Bloxity Legion.
+#
+# Needs two things set in this repo's GitHub settings first:
+#   Settings -> Secrets and variables -> Actions -> Secrets  -> LEGION_DEPLOY_TOKEN
+#   Settings -> Secrets and variables -> Actions -> Variables -> LEGION_GAME_ID
+#
+# The deploy token is a credential, not a value to commit - see the note at the
+# bottom of .env.example for what to do if one ever ends up in a file instead.
+#
+# `main` pushes go to the prod channel, `dev` pushes go to the dev (playtest)
+# channel; nothing else triggers a deploy.
+#
+# seatCap is how many players one pod holds before the matchmaker starts another. It
+# must equal the lobby room's cap (SEAT_CAP in src/lobbyRoom.js, 50 by default). No
+# maxReplicas: Boxity starts as many pods as the players need on its own.
+name: Deploy server to Bloxity Legion
+
+on:
+  push:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR image paths have to be lowercase, and this repo's owner isn't - so the
+      # image tag is built here rather than inlined with the raw repository fields.
+      - name: Work out the channel and image tag
+        id: plan
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "channel=prod" >> "$GITHUB_OUTPUT"
+          else
+            echo "channel=dev" >> "$GITHUB_OUTPUT"
+          fi
+          echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ steps.plan.outputs.owner }}/ammo-per-click-server:${{ steps.plan.outputs.channel }}-${{ github.sha }}
+
+      - name: Tell Legion to roll it out
+        run: |
+          curl --fail-with-body -sS -X POST \
+            "https://legion.bloxity.io/v1/apps/${{ vars.LEGION_GAME_ID }}/deploy" \
+            -H "Authorization: Bearer ${{ secrets.LEGION_DEPLOY_TOKEN }}" \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "channel": "${{ steps.plan.outputs.channel }}",
+              "image": "ghcr.io/${{ steps.plan.outputs.owner }}/ammo-per-click-server:${{ steps.plan.outputs.channel }}-${{ github.sha }}",
+              "version": "${{ github.sha }}",
+              "seatCap": 50
+            }'

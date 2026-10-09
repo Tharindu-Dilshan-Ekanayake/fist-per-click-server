@@ -1,0 +1,13 @@
+# Installed from package-lock.json on the machine that runs the code. Committing it
+# ships one platform's binaries to every other platform: this repo carried a Windows
+# install, .cmd and .ps1 shims and all, into a Linux deploy.
+node_modules/
+
+# Secrets and per-machine settings. ALLOWED_ORIGINS and PORT come from the host.
+.env
+.env.*
+!.env.example
+
+npm-debug.log*
+*.log
+.DS_Store

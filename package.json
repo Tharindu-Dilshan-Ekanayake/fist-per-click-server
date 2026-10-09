@@ -1,0 +1,28 @@
+{
+  "name": "ammo-per-click-server",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test \"src/**/*.test.js\"",
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@colyseus/ws-transport": "^0.18.2",
+    "colyseus": "^0.18.5",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "mongodb": "^6.21.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}
