@@ -1,8 +1,8 @@
 # Builds the server into a Docker image and rolls it out on Bloxity Legion.
 #
-# Needs two things set in this repo's GitHub settings first:
+# Needs one thing set in this repo's GitHub settings first:
 #   Settings -> Secrets and variables -> Actions -> Secrets  -> LEGION_DEPLOY_TOKEN
-#   Settings -> Secrets and variables -> Actions -> Variables -> LEGION_GAME_ID
+# and, optionally, Variables -> LEGION_GAME_ID (it defaults to 1-fist-per-click).
 #
 # The deploy token is a credential, not a value to commit - see the note at the
 # bottom of .env.example for what to do if one ever ends up in a file instead.
@@ -51,17 +51,17 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ steps.plan.outputs.owner }}/ammo-per-click-server:${{ steps.plan.outputs.channel }}-${{ github.sha }}
+          tags: ghcr.io/${{ steps.plan.outputs.owner }}/fist-per-click-server:${{ steps.plan.outputs.channel }}-${{ github.sha }}
 
       - name: Tell Legion to roll it out
         run: |
           curl --fail-with-body -sS -X POST \
-            "https://legion.bloxity.io/v1/apps/${{ vars.LEGION_GAME_ID }}/deploy" \
+            "https://legion.bloxity.io/v1/apps/${{ vars.LEGION_GAME_ID || '1-fist-per-click' }}/deploy" \
             -H "Authorization: Bearer ${{ secrets.LEGION_DEPLOY_TOKEN }}" \
             -H 'Content-Type: application/json' \
             -d '{
               "channel": "${{ steps.plan.outputs.channel }}",
-              "image": "ghcr.io/${{ steps.plan.outputs.owner }}/ammo-per-click-server:${{ steps.plan.outputs.channel }}-${{ github.sha }}",
+              "image": "ghcr.io/${{ steps.plan.outputs.owner }}/fist-per-click-server:${{ steps.plan.outputs.channel }}-${{ github.sha }}",
               "version": "${{ github.sha }}",
               "seatCap": 50
             }'

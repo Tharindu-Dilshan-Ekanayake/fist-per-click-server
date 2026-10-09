@@ -5,16 +5,16 @@ const { sanitizeProgress } = require('./progress')
 
 test('rejects anything that is not a save', () => {
   assert.equal(sanitizeProgress(null), null)
-  assert.equal(sanitizeProgress('ammo'), null)
+  assert.equal(sanitizeProgress('strength'), null)
   assert.equal(sanitizeProgress([1, 2]), null)
 })
 
 test('keeps numbers finite, positive and whole where they must be', () => {
-  const out = sanitizeProgress({ ammo: -5, wins: Infinity, rebirths: 2.7, bossLevel: 0, bestWall: '9' })
-  assert.equal(out.ammo, 0)
+  const out = sanitizeProgress({ strength: -5, wins: Infinity, rebirths: 2.7, ringWins: -1, bestWall: '9' })
+  assert.equal(out.strength, 0)
   assert.equal(out.wins, 0)
   assert.equal(out.rebirths, 2)
-  assert.equal(out.bossLevel, 1)
+  assert.equal(out.ringWins, 0)
   assert.equal(out.bestWall, 0)
 })
 
@@ -46,10 +46,15 @@ test('lists are de-duplicated, string-only and bounded', () => {
   assert.deepEqual(out.owned, ['a', 'b'])
 })
 
-test('footprints need the gun, and only bought ones can be worn', () => {
+test('footprints need the gloves, and only bought ones can be worn', () => {
   const out = sanitizeProgress({ owned: ['starter', 'space'], ownedFootprints: ['starter', 'lava'], footprints: 'lava' })
   assert.deepEqual(out.ownedFootprints, ['starter'])
   assert.equal(out.footprints, null)
   const worn = sanitizeProgress({ owned: ['starter'], ownedFootprints: ['starter'], footprints: 'starter' })
   assert.equal(worn.footprints, 'starter')
+})
+
+test('only an owned aura can be worn', () => {
+  assert.equal(sanitizeProgress({ ownedAuras: ['spark'], aura: 'galaxy' }).aura, null)
+  assert.equal(sanitizeProgress({ ownedAuras: ['spark'], aura: 'spark' }).aura, 'spark')
 })

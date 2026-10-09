@@ -45,7 +45,7 @@ async function mongoStore(uri) {
   const db = client.db()
   const saves = db.collection('saves')
   // One per leaderboard (see routes.js), so the boards never scan every save.
-  await Promise.all(['wins', 'rebirths', 'bossLevel'].map((field) => saves.createIndex({ [`progress.${field}`]: -1 })))
+  await Promise.all(['wins', 'rebirths', 'ringWins'].map((field) => saves.createIndex({ [`progress.${field}`]: -1 })))
 
   return {
     kind: 'mongo',

@@ -41,28 +41,18 @@ function mountRoutes(app, store) {
 
   /**
    * The lobby's leaderboards: the top LEADERBOARD_SIZE signed-in players by Wins, by
-   * Rebirths, and by bosses beaten. Public - names and scores only - and cached per
-   * pod for LEADERBOARD_TTL_MS, so a full lobby asking at once is one set of queries.
+   * Rebirths, and by fights won in the boxing rings. Public - names and scores only -
+   * and cached per pod for LEADERBOARD_TTL_MS, so a full lobby asking at once is one
+   * set of queries.
    */
   let board = null
   app.get('/api/leaderboard', async (_req, res) => {
     try {
       if (!board || Date.now() - board.at > LEADERBOARD_TTL_MS) {
-        const [wins, rebirths, bosses] = await Promise.all(
-          ['wins', 'rebirths', 'bossLevel'].map((field) => store.topSaves(field, LEADERBOARD_SIZE + 1)),
+        const [wins, rebirths, fights] = await Promise.all(
+          ['wins', 'rebirths', 'ringWins'].map((field) => store.topSaves(field, LEADERBOARD_SIZE)),
         )
-        board = {
-          at: Date.now(),
-          body: {
-            wins: wins.slice(0, LEADERBOARD_SIZE),
-            rebirths: rebirths.slice(0, LEADERBOARD_SIZE),
-            // The save holds the next boss to fight; the board counts the ones beaten.
-            bosses: bosses
-              .map(({ username, value }) => ({ username, value: value - 1 }))
-              .filter((row) => row.value > 0)
-              .slice(0, LEADERBOARD_SIZE),
-          },
-        }
+        board = { at: Date.now(), body: { wins, rebirths, fights } }
       }
       res.set('Cache-Control', 'public, max-age=30').json(board.body)
     } catch (error) {

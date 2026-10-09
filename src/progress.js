@@ -1,7 +1,7 @@
 /**
  * What a saved game may contain, and the cleaning every save gets on the way in.
  *
- * The game is a single-player clicker at heart: Ammo and Wins are counted in the
+ * The game is a single-player clicker at heart: Strength and Wins are counted in the
  * browser, and the server cannot replay every click to check them. What it can do is
  * refuse anything malformed, keep numbers finite and inside JavaScript's exact range,
  * keep lists short and made of short strings, and keep what is equipped consistent
@@ -13,9 +13,9 @@ const MAX_NUMBER = Number.MAX_SAFE_INTEGER * 1e6
 const MAX_LIST = 200
 const MAX_ID = 40
 
-const NUMBERS = ['ammo', 'rebirths', 'wins', 'bestWall', 'spaceBest', 'caveBest', 'bossLevel']
-const LISTS = ['owned', 'ownedPets', 'equippedPets', 'unlockedTrainers', 'ownedPasses', 'ownedFootprints']
-const STRINGS = ['equipped', 'footprints']
+const NUMBERS = ['strength', 'rebirths', 'wins', 'bestWall', 'spaceBest', 'ringWins', 'ringStreak', 'bestLevel']
+const LISTS = ['owned', 'ownedPets', 'equippedPets', 'unlockedTrainers', 'ownedPasses', 'ownedFootprints', 'ownedAuras']
+const STRINGS = ['equipped', 'footprints', 'aura']
 const BOOLEANS = ['opAutoOwned', 'autoWins']
 
 const cleanNumber = (value) =>
@@ -55,15 +55,17 @@ function sanitizeProgress(input) {
   for (const key of BOOLEANS) out[key] = input[key] === true
   out.boost = cleanBoost(input.boost)
   out.rebirths = Math.floor(out.rebirths)
-  out.bossLevel = Math.max(1, Math.floor(out.bossLevel))
 
-  // A pet that is not owned cannot be following you, nor a gun in your hand.
+  // A pet that is not owned cannot be following you, nor gloves on your hands.
   out.equippedPets = out.equippedPets.filter((id) => out.ownedPets.includes(id))
   if (out.equipped && !out.owned.includes(out.equipped)) out.equipped = out.owned[0] ?? null
   if (!out.equipped) delete out.equipped
-  // Footprints are bought per gun, and only the ones bought can be worn.
+  // Footprints are bought per pair of gloves, and only the ones bought can be worn.
   out.ownedFootprints = out.ownedFootprints.filter((id) => out.owned.includes(id))
   if (!out.ownedFootprints.includes(out.footprints)) out.footprints = null
+  // Only an aura that has been earned or bought can be worn.
+  if (!out.ownedAuras.includes(out.aura)) out.aura = null
+  out.bestLevel = Math.max(1, Math.floor(out.bestLevel))
   return out
 }
 
