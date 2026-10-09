@@ -12,9 +12,10 @@ The online half of the game:
   (`src/lobbyRoom.js`). The game plays fine without it.
 - **Boxing rings.** Four rings per lobby, fought out here so that everyone sees the
   same fight (`src/rings.js`): two pads in front of each ring, and when both are
-  taken those two go in; the countdown, every punch that lands (the stronger fist
-  does more damage, and only within reach), the knockout - or, after 60 seconds, a
-  decision on health - and the winner's reward. Dropping off mid-fight is a
+  joined those two go in, each with health for their level; the countdown, every
+  punch that lands (the stronger fist and the higher level do more damage, and only
+  within reach), the knockout - or, after 45 seconds, a decision on the share of
+  health left - and the winner's reward. Dropping off mid-fight is a
   forfeit.
 
 Everything runs on one port: Express for HTTP, Colyseus for the socket.

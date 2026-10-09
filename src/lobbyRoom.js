@@ -29,7 +29,7 @@ const rings = require('./rings')
  *     'profile'    { id, name, avatar, glove, pet, trainer, footprints, aura, level }
  *     'states'     { s: [[id, x, y, z, sw, ts], ...] }   everyone who moved, 20/s
  *     'rings'      { rings: [{ f: [id|null, id|null], p: [id|null, id|null], hp, s, t }] }
- *     'ringStart'  { r, f }                        two off the pads and into the ring
+ *     'ringStart'  { r, f, mh }                    two off the pads and into the ring, full health
  *     'ringCancel' { r, f }                        a fighter dropped before it started
  *     'ringHit'    { r, from, to, d, hp }          a punch landed
  *     'ringKO'     { r, winner, loser, reward, reason, draw, f }
@@ -174,7 +174,7 @@ class LobbyRoom extends colyseus.Room {
       const slot = readSlot(message?.slot)
       if (!player || r < 0 || slot < 0 || overRate(player)) return
       const lobby = this.lobbies.lobbyOf(player.id)
-      const result = rings.padEnter(this.ringsOf(lobby), r, slot, player, message?.power, Date.now())
+      const result = rings.padEnter(this.ringsOf(lobby), r, slot, player, message?.power, Date.now(), lobby.players)
       if (!result.ok) {
         client.send('ringDeny', { r, slot, reason: result.reason })
         return
@@ -277,7 +277,7 @@ class LobbyRoom extends colyseus.Room {
   tellRingEvents(lobby, events, except = null) {
     for (const event of events) {
       if (event.type === 'start') {
-        this.tellLobby(lobby, 'ringStart', { r: event.ring, f: event.fighters }, except)
+        this.tellLobby(lobby, 'ringStart', { r: event.ring, f: event.fighters, mh: event.maxHp }, except)
       } else if (event.type === 'cancel') {
         this.tellLobby(lobby, 'ringCancel', { r: event.ring, f: event.fighters }, except)
       } else if (event.type === 'hit') {
@@ -304,7 +304,7 @@ class LobbyRoom extends colyseus.Room {
     const now = Date.now()
     for (const lobby of this.lobbies.lobbies.values()) {
       if (lobby.rings) {
-        const { changed, events } = rings.tick(lobby.rings, now)
+        const { changed, events } = rings.tick(lobby.rings, now, lobby.players)
         if (events.length) this.tellRingEvents(lobby, events)
         if (changed) this.tellRings(lobby)
       }

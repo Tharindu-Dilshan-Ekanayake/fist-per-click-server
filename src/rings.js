@@ -14,9 +14,11 @@
  *   open       nobody fighting. The pads fill up; two on them starts a fight.
  *   countdown  COUNTDOWN_MS of "3, 2, 1".
  *   fight      punches land. Each one does more damage the stronger its thrower is
- *              next to the other (see damageFor), and only within reach. A fight
- *              that runs ROUND_MS goes to whoever has more health left (a draw if
- *              neither does).
+ *              next to the other and the higher their level (see damageFor), and
+ *              only within reach. A fight that runs ROUND_MS goes to whoever has more
+ *              of their health left (a draw if it is even).
+ *
+ * Health grows with level too: a fighter steps in with maxHpFor(level).
  *   ko         someone went down. KO_MS later both fighters are out: the loser
  *              back to the lobby, the winner beside the ring with the Wins - and if
  *              the pads have filled up in the meantime, the next fight starts.
@@ -42,9 +44,14 @@ const PAD_FRONT = 8
 /** How far from a pad's middle its player may be, a tick out of date. */
 const PAD_RADIUS = 2.2
 
+/** Health at level 1; every level after adds HP_PER_LEVEL. */
 const MAX_HP = 100
+const HP_PER_LEVEL = 20
+/** Each level past the first adds this much to a fighter's punches. */
+const DAMAGE_PER_LEVEL = 0.15
+const MAX_LEVEL = 1000
 const COUNTDOWN_MS = 3000
-const ROUND_MS = 60000
+const ROUND_MS = 45000
 const KO_MS = 2600
 /** Fastest a fighter's punches count: about seven a second. */
 const MIN_PUNCH_GAP_MS = 140
@@ -54,6 +61,11 @@ const BASE_DAMAGE = 6
 const REACH = 4
 /** Largest power a client may claim; anything past this is treated as this. */
 const MAX_POWER = Number.MAX_SAFE_INTEGER * 1e6
+
+const cleanLevel = (value) => (Number.isInteger(value) && value >= 1 ? Math.min(value, MAX_LEVEL) : 1)
+
+/** A fighter's health at `level`. */
+const maxHpFor = (level) => MAX_HP + (cleanLevel(level) - 1) * HP_PER_LEVEL
 
 const cleanPower = (value) =>
   typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.min(value, MAX_POWER) : 1
@@ -70,6 +82,7 @@ function freshRing() {
     pads: [null, null],
     fighters: [null, null],
     hp: [MAX_HP, MAX_HP],
+    maxHp: [MAX_HP, MAX_HP],
     power: [1, 1],
     lastPunch: [0, 0],
     state: 'open',
@@ -87,11 +100,12 @@ const createRings = () => RINGS.map(() => freshRing())
  * while the other does a tenth of it - so the stronger fist wins, but a fight is
  * still a fight and not one click.
  */
-function damageFor(attackerPower, defenderPower) {
+function damageFor(attackerPower, defenderPower, attackerLevel = 1) {
   const a = cleanPower(attackerPower)
   const d = cleanPower(defenderPower)
   const share = a / (a + d)
-  return Math.max(0.05, Math.round(BASE_DAMAGE * 2 * share * 100) / 100)
+  const boost = 1 + (cleanLevel(attackerLevel) - 1) * DAMAGE_PER_LEVEL
+  return Math.max(0.05, Math.round(BASE_DAMAGE * 2 * share * boost * 100) / 100)
 }
 
 /**
@@ -129,26 +143,28 @@ function standingOn(index, slot, p) {
 }
 
 /**
- * Two on the pads and nobody fighting: they go in. Returns the start event, or null.
+ * Two on the pads and nobody fighting: they go in, each with the health their level
+ * gives (`levels` maps ids to levels). Returns the start event, or null.
  */
-function tryStart(rings, index, now) {
+function tryStart(rings, index, now, levels = new Map()) {
   const ring = rings[index]
   if (fighting(ring) || ring.pads[0] === null || ring.pads[1] === null) return null
   ring.fighters = [...ring.pads]
   ring.pads = [null, null]
-  ring.hp = [MAX_HP, MAX_HP]
+  ring.maxHp = ring.fighters.map((id) => maxHpFor(levels.get(id)))
+  ring.hp = [...ring.maxHp]
   ring.lastPunch = [0, 0]
   ring.state = 'countdown'
   ring.until = now + COUNTDOWN_MS
   ring.ko = null
-  return { type: 'start', ring: index, fighters: [...ring.fighters] }
+  return { type: 'start', ring: index, fighters: [...ring.fighters], maxHp: [...ring.maxHp] }
 }
 
 /**
  * A player steps onto ring `index`'s pad `slot` (0 red, 1 blue).
  * @returns {{ ok: boolean, reason?: string, events: object[] }}
  */
-function padEnter(rings, index, slot, player, power, now) {
+function padEnter(rings, index, slot, player, power, now, players = new Map([[player.id, player]])) {
   const ring = rings[index]
   if (!ring || (slot !== 0 && slot !== 1)) return { ok: false, reason: 'no such pad', events: [] }
   if (ringOf(rings, player.id)[0] >= 0) return { ok: false, reason: 'fighting', events: [] }
@@ -160,7 +176,7 @@ function padEnter(rings, index, slot, player, power, now) {
   if (oldRing >= 0) rings[oldRing].pads[oldSlot] = null
   ring.pads[slot] = player.id
   ring.power[slot] = cleanPower(power)
-  const start = tryStart(rings, index, now)
+  const start = tryStart(rings, index, now, levelsOf(players))
   return { ok: true, events: start ? [start] : [] }
 }
 
@@ -170,6 +186,13 @@ function padLeave(rings, index, slot, id) {
   if (!ring || ring.pads[slot] !== id) return false
   ring.pads[slot] = null
   return true
+}
+
+/** Every known player's level, by id, from records with a `level`. */
+function levelsOf(players) {
+  const out = new Map()
+  for (const [id, player] of players) out.set(id, player.level)
+  return out
 }
 
 /** Starts the end of a fight: `loserSlot` is down (or -1 for a draw). */
@@ -234,7 +257,7 @@ function punch(rings, index, attacker, power, players, now) {
   const b = players.get(ring.fighters[other])?.p
   if (!a || !b || Math.hypot(a[0] - b[0], a[2] - b[2]) > REACH) return [{ type: 'miss', ring: index, from: attacker }]
 
-  const damage = damageFor(ring.power[slot], ring.power[other])
+  const damage = damageFor(ring.power[slot], ring.power[other], players.get(attacker)?.level)
   ring.hp[other] = Math.max(0, Math.round((ring.hp[other] - damage) * 100) / 100)
   const events = [{ type: 'hit', ring: index, from: attacker, to: ring.fighters[other], damage, hp: [...ring.hp] }]
   if (ring.hp[other] <= 0) events.push(finish(rings, index, other, now, 'ko'))
@@ -246,7 +269,7 @@ function punch(rings, index, attacker, power, players, now) {
  * to a decision, finished knockouts back to open - and then, if two are waiting on
  * the pads, straight into the next fight. Returns `{ changed, events }`.
  */
-function tick(rings, now) {
+function tick(rings, now, players = new Map()) {
   let changed = false
   const events = []
   rings.forEach((ring, index) => {
@@ -255,18 +278,21 @@ function tick(rings, now) {
       ring.until = now + ROUND_MS
       changed = true
     } else if (ring.state === 'fight' && now >= ring.until) {
-      const [a, b] = ring.hp
+      // On the share of their health each has left, so a bigger health bar is no edge.
+      const a = ring.hp[0] / ring.maxHp[0]
+      const b = ring.hp[1] / ring.maxHp[1]
       events.push(finish(rings, index, a === b ? -1 : a < b ? 0 : 1, now, 'decision'))
       changed = true
     } else if (ring.state === 'ko' && now >= ring.until) {
       ring.fighters = [null, null]
       ring.hp = [MAX_HP, MAX_HP]
+      ring.maxHp = [MAX_HP, MAX_HP]
       ring.state = 'open'
       ring.until = 0
       ring.ko = null
       changed = true
     }
-    const start = tryStart(rings, index, now)
+    const start = tryStart(rings, index, now, levelsOf(players))
     if (start) {
       events.push(start)
       changed = true
@@ -281,6 +307,7 @@ function snapshot(rings, now) {
     f: [...ring.fighters],
     p: [...ring.pads],
     hp: [...ring.hp],
+    mh: [...ring.maxHp],
     s: ring.state,
     t: ring.until ? Math.max(0, ring.until - now) : 0,
   }))
@@ -290,6 +317,8 @@ module.exports = {
   RINGS,
   PAD_OFFSET,
   MAX_HP,
+  HP_PER_LEVEL,
+  maxHpFor,
   COUNTDOWN_MS,
   ROUND_MS,
   KO_MS,

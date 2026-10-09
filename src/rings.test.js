@@ -22,7 +22,7 @@ function fightingPair(powerA = 100, powerB = 100) {
   assert.equal(rings.padEnter(all, 1, 0, a, powerA, 0).ok, true)
   const started = rings.padEnter(all, 1, 1, b, powerB, 0)
   assert.equal(started.ok, true)
-  assert.deepEqual(started.events[0], { type: 'start', ring: 1, fighters: ['a', 'b'] })
+  assert.deepEqual(started.events[0], { type: 'start', ring: 1, fighters: ['a', 'b'], maxHp: [100, 100] })
   assert.equal(all[1].state, 'countdown')
   assert.deepEqual(all[1].pads, [null, null])
   rings.tick(all, rings.COUNTDOWN_MS)
@@ -71,6 +71,19 @@ test('the stronger fist does more damage, equal fists the base', () => {
   assert.equal(rings.damageFor(50, 50), rings.BASE_DAMAGE)
   assert.ok(rings.damageFor(1000, 10) > rings.damageFor(10, 1000) * 50)
   assert.ok(rings.damageFor(1e12, 1) <= rings.BASE_DAMAGE * 2)
+  assert.ok(rings.damageFor(50, 50, 10) > rings.damageFor(50, 50, 1) * 2)
+})
+
+test('a higher level steps in with more health', () => {
+  const all = rings.createRings()
+  const a = { ...onPad('a', 1, 0), level: 11 }
+  const b = { ...onPad('b', 1, 1), level: 1 }
+  const players = new Map([['a', a], ['b', b]])
+  rings.padEnter(all, 1, 0, a, 10, 0, players)
+  rings.padEnter(all, 1, 1, b, 10, 0, players)
+  assert.deepEqual(all[1].maxHp, [rings.maxHpFor(11), rings.MAX_HP])
+  assert.deepEqual(all[1].hp, all[1].maxHp)
+  assert.deepEqual(rings.snapshot(all, 0)[1].mh, all[1].maxHp)
 })
 
 test('punches land within reach, and enough of them knock out', () => {
