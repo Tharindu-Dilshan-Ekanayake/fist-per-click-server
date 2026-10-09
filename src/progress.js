@@ -13,9 +13,9 @@ const MAX_NUMBER = Number.MAX_SAFE_INTEGER * 1e6
 const MAX_LIST = 200
 const MAX_ID = 40
 
-const NUMBERS = ['strength', 'rebirths', 'wins', 'bestWall', 'spaceBest', 'ringWins', 'ringStreak']
-const LISTS = ['owned', 'ownedPets', 'equippedPets', 'unlockedTrainers', 'ownedPasses', 'ownedFootprints']
-const STRINGS = ['equipped', 'footprints']
+const NUMBERS = ['strength', 'rebirths', 'wins', 'bestWall', 'spaceBest', 'ringWins', 'ringStreak', 'bestLevel']
+const LISTS = ['owned', 'ownedPets', 'equippedPets', 'unlockedTrainers', 'ownedPasses', 'ownedFootprints', 'ownedAuras']
+const STRINGS = ['equipped', 'footprints', 'aura']
 const BOOLEANS = ['opAutoOwned', 'autoWins']
 
 const cleanNumber = (value) =>
@@ -63,6 +63,9 @@ function sanitizeProgress(input) {
   // Footprints are bought per pair of gloves, and only the ones bought can be worn.
   out.ownedFootprints = out.ownedFootprints.filter((id) => out.owned.includes(id))
   if (!out.ownedFootprints.includes(out.footprints)) out.footprints = null
+  // Only an aura that has been earned or bought can be worn.
+  if (!out.ownedAuras.includes(out.aura)) out.aura = null
+  out.bestLevel = Math.max(1, Math.floor(out.bestLevel))
   return out
 }
 

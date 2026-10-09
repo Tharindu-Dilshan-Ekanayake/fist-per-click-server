@@ -53,3 +53,8 @@ test('footprints need the gloves, and only bought ones can be worn', () => {
   const worn = sanitizeProgress({ owned: ['starter'], ownedFootprints: ['starter'], footprints: 'starter' })
   assert.equal(worn.footprints, 'starter')
 })
+
+test('only an owned aura can be worn', () => {
+  assert.equal(sanitizeProgress({ ownedAuras: ['spark'], aura: 'galaxy' }).aura, null)
+  assert.equal(sanitizeProgress({ ownedAuras: ['spark'], aura: 'spark' }).aura, 'spark')
+})

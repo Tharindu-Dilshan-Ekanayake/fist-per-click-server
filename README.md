@@ -10,11 +10,12 @@ The online half of the game:
   in the lobby.
 - **Lobbies.** The Colyseus room that lets players in the same lobby see each other
   (`src/lobbyRoom.js`). The game plays fine without it.
-- **Boxing rings.** Four rings per lobby, two fighters each, fought out here so that
-  everyone sees the same fight (`src/rings.js`): who is in which ring, the countdown,
-  every punch that lands (the stronger fist does more damage, and only within reach),
-  the knockout and the winner's reward. Stepping out mid-fight, or dropping off, is
-  a forfeit.
+- **Boxing rings.** Four rings per lobby, fought out here so that everyone sees the
+  same fight (`src/rings.js`): two pads in front of each ring, and when both are
+  taken those two go in; the countdown, every punch that lands (the stronger fist
+  does more damage, and only within reach), the knockout - or, after 60 seconds, a
+  decision on health - and the winner's reward. Dropping off mid-fight is a
+  forfeit.
 
 Everything runs on one port: Express for HTTP, Colyseus for the socket.
 

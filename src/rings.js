@@ -2,57 +2,72 @@
  * The boxing rings: four in every lobby, two fighters in each.
  *
  * The fight itself lives here, on the server, so that both fighters and everyone
- * watching see the same thing: who is in which ring, both health bars, every punch
- * that lands and who goes down. The clients only ask - to step in, to step out, to
- * throw a punch - and are told what happened.
+ * watching see the same thing: who is waiting on which pad, who is in which ring,
+ * both health bars, every punch that lands and who goes down. The clients only ask -
+ * to stand on a pad, to step off it, to throw a punch - and are told what happened.
  *
- * A ring goes:
+ * Nobody walks into a ring: its ropes are solid all the time. Beside each ring are
+ * two pads, the red corner's and the blue corner's. When both have someone standing
+ * on them, those two are taken into the ring (their clients put them in their
+ * corners) and the fight starts:
  *
- *   open       nobody, or one fighter waiting for a challenger. Anyone may step in.
- *   countdown  a second fighter stepped in: COUNTDOWN_MS of "3, 2, 1" and the ropes
- *              go solid, so nobody else gets in and neither fighter gets out.
+ *   open       nobody fighting. The pads fill up; two on them starts a fight.
+ *   countdown  COUNTDOWN_MS of "3, 2, 1".
  *   fight      punches land. Each one does more damage the stronger its thrower is
- *              next to the other (see damageFor), and only within reach.
- *   ko         someone hit zero. KO_MS later the loser is out (their client sends
- *              them back to the lobby) and the winner stays on, at full health,
- *              waiting for the next challenger.
+ *              next to the other (see damageFor), and only within reach. A fight
+ *              that runs ROUND_MS goes to whoever has more health left (a draw if
+ *              neither does).
+ *   ko         someone went down. KO_MS later both fighters are out: the loser
+ *              back to the lobby, the winner beside the ring with the Wins - and if
+ *              the pads have filled up in the meantime, the next fight starts.
  *
- * Stepping out during a fight - or dropping off the server - is a forfeit.
+ * Dropping off the server mid-fight is a forfeit.
  *
- * Positions and the ring layout are the client's (src/game/rings.js); keep RINGS
- * below in step with it. They are only used to check that a player asking to step
- * in is actually standing on that canvas, and that a punch is thrown from within
- * reach - generously, since positions arrive twenty times a second.
+ * Positions and the ring layout are the client's (src/game/rings.js); keep RINGS and
+ * PAD_OFFSET / PAD_FRONT below in step with it. They are used to check that a player asking for
+ * a pad is standing on it, and that a punch is thrown from within reach - generously,
+ * since positions arrive twenty times a second.
  */
 
-const RING_HALF = 4.4
 const RINGS = [
-  { id: 0, x: -22.5, z: 76 },
-  { id: 1, x: -7.5, z: 76 },
-  { id: 2, x: 7.5, z: 76 },
-  { id: 3, x: 22.5, z: 76 },
+  { id: 0, x: -24, z: 76 },
+  { id: 1, x: -8, z: 76 },
+  { id: 2, x: 8, z: 76 },
+  { id: 3, x: 24, z: 76 },
 ]
+/** How far either side of a ring's middle its two pads are (red to the west)... */
+const PAD_OFFSET = 2.7
+/** ...and how far in front of it (south). */
+const PAD_FRONT = 8
+/** How far from a pad's middle its player may be, a tick out of date. */
+const PAD_RADIUS = 2.2
 
 const MAX_HP = 100
 const COUNTDOWN_MS = 3000
+const ROUND_MS = 60000
 const KO_MS = 2600
 /** Fastest a fighter's punches count: about seven a second. */
 const MIN_PUNCH_GAP_MS = 140
 /** Damage of one punch between two equally strong fighters. */
 const BASE_DAMAGE = 6
 /** Horizontal distance between the two fighters' centres within which a punch lands. */
-const REACH = 3.4
-/** Slack on the "standing on the canvas" check, for a position a tick out of date. */
-const ENTER_MARGIN = 2
+const REACH = 4
 /** Largest power a client may claim; anything past this is treated as this. */
 const MAX_POWER = Number.MAX_SAFE_INTEGER * 1e6
 
 const cleanPower = (value) =>
   typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.min(value, MAX_POWER) : 1
 
-/** A ring with nobody in it. */
+/** Where ring `index`'s pad `slot` is: [x, z]. */
+const padAt = (index, slot) => {
+  const ring = RINGS[index]
+  return [ring.x + (slot === 0 ? -PAD_OFFSET : PAD_OFFSET), ring.z - PAD_FRONT]
+}
+
+/** A ring with nobody in it or waiting. */
 function freshRing() {
   return {
+    pads: [null, null],
     fighters: [null, null],
     hp: [MAX_HP, MAX_HP],
     power: [1, 1],
@@ -89,7 +104,7 @@ function rewardFor(loserPower) {
 }
 
 const slotOf = (ring, id) => ring.fighters.indexOf(id)
-const full = (ring) => ring.fighters[0] !== null && ring.fighters[1] !== null
+const fighting = (ring) => ring.state !== 'open'
 
 /** The ring, if any, the player is fighting in, as `[index, ring]`. */
 function ringOf(rings, id) {
@@ -97,108 +112,113 @@ function ringOf(rings, id) {
   return [-1, null]
 }
 
-/** Whether `p` ([x, y, z]) is on ring `index`'s canvas, give or take ENTER_MARGIN. */
-function standingIn(index, p) {
-  const at = RINGS[index]
-  if (!at || !Array.isArray(p)) return false
-  return Math.abs(p[0] - at.x) <= RING_HALF + ENTER_MARGIN && Math.abs(p[2] - at.z) <= RING_HALF + ENTER_MARGIN
+/** The pad, if any, the player is standing on, as `[ringIndex, slot]`. */
+function padOf(rings, id) {
+  for (let i = 0; i < rings.length; i++) {
+    const slot = rings[i].pads.indexOf(id)
+    if (slot >= 0) return [i, slot]
+  }
+  return [-1, -1]
+}
+
+/** Whether `p` ([x, y, z]) is on ring `index`'s pad `slot`, give or take PAD_RADIUS. */
+function standingOn(index, slot, p) {
+  if (!RINGS[index] || !Array.isArray(p)) return false
+  const [x, z] = padAt(index, slot)
+  return Math.hypot(p[0] - x, p[2] - z) <= PAD_RADIUS
 }
 
 /**
- * Starts a knockout: `loserSlot` is down. Returns the event for everyone.
- * `forfeit` is set when they walked out or dropped rather than were punched out.
+ * Two on the pads and nobody fighting: they go in. Returns the start event, or null.
  */
-function knockOut(rings, index, loserSlot, now, forfeit = false) {
+function tryStart(rings, index, now) {
   const ring = rings[index]
-  const winnerSlot = 1 - loserSlot
-  ring.hp[loserSlot] = 0
+  if (fighting(ring) || ring.pads[0] === null || ring.pads[1] === null) return null
+  ring.fighters = [...ring.pads]
+  ring.pads = [null, null]
+  ring.hp = [MAX_HP, MAX_HP]
+  ring.lastPunch = [0, 0]
+  ring.state = 'countdown'
+  ring.until = now + COUNTDOWN_MS
+  ring.ko = null
+  return { type: 'start', ring: index, fighters: [...ring.fighters] }
+}
+
+/**
+ * A player steps onto ring `index`'s pad `slot` (0 red, 1 blue).
+ * @returns {{ ok: boolean, reason?: string, events: object[] }}
+ */
+function padEnter(rings, index, slot, player, power, now) {
+  const ring = rings[index]
+  if (!ring || (slot !== 0 && slot !== 1)) return { ok: false, reason: 'no such pad', events: [] }
+  if (ringOf(rings, player.id)[0] >= 0) return { ok: false, reason: 'fighting', events: [] }
+  if (ring.pads[slot] === player.id) return { ok: true, events: [] }
+  if (ring.pads[slot] !== null) return { ok: false, reason: 'taken', events: [] }
+  if (!standingOn(index, slot, player.p)) return { ok: false, reason: 'not here', events: [] }
+  // Off whichever pad they were on before.
+  const [oldRing, oldSlot] = padOf(rings, player.id)
+  if (oldRing >= 0) rings[oldRing].pads[oldSlot] = null
+  ring.pads[slot] = player.id
+  ring.power[slot] = cleanPower(power)
+  const start = tryStart(rings, index, now)
+  return { ok: true, events: start ? [start] : [] }
+}
+
+/** A player steps off ring `index`'s pad `slot`. Returns whether anything changed. */
+function padLeave(rings, index, slot, id) {
+  const ring = rings[index]
+  if (!ring || ring.pads[slot] !== id) return false
+  ring.pads[slot] = null
+  return true
+}
+
+/** Starts the end of a fight: `loserSlot` is down (or -1 for a draw). */
+function finish(rings, index, loserSlot, now, reason) {
+  const ring = rings[index]
   ring.state = 'ko'
   ring.until = now + KO_MS
+  if (loserSlot < 0) {
+    ring.ko = { winner: null, loser: null, reward: 0, reason }
+    return { type: 'ko', ring: index, winner: null, loser: null, draw: true, fighters: [...ring.fighters], reward: 0, reason }
+  }
+  const winnerSlot = 1 - loserSlot
+  ring.hp[loserSlot] = 0
   ring.ko = {
     winner: ring.fighters[winnerSlot],
     loser: ring.fighters[loserSlot],
     reward: rewardFor(ring.power[loserSlot]),
-    forfeit,
+    reason,
   }
-  return { type: 'ko', ring: index, ...ring.ko }
+  return { type: 'ko', ring: index, ...ring.ko, draw: false, fighters: [...ring.fighters] }
 }
 
 /**
- * A player asks to step into ring `index`.
- * @returns {{ ok: boolean, reason?: string, events: object[] }}
- *   `events` is what to tell the lobby (a knockout, if stepping in here meant
- *   forfeiting a fight somewhere else).
- */
-function enter(rings, index, player, power, now) {
-  const ring = rings[index]
-  if (!ring) return { ok: false, reason: 'no such ring', events: [] }
-  if (ring.fighters.includes(player.id)) return { ok: true, events: [] }
-  if (full(ring) || ring.state !== 'open') return { ok: false, reason: 'full', events: [] }
-  if (!standingIn(index, player.p)) return { ok: false, reason: 'not here', events: [] }
-
-  // In another ring already (the client lost track): that one is left first.
-  const events = []
-  const [other] = ringOf(rings, player.id)
-  if (other >= 0) events.push(...leave(rings, other, player.id, now))
-
-  const slot = ring.fighters[0] === null ? 0 : 1
-  ring.fighters[slot] = player.id
-  ring.hp[slot] = MAX_HP
-  ring.power[slot] = cleanPower(power)
-  ring.lastPunch[slot] = 0
-  if (full(ring)) {
-    ring.state = 'countdown'
-    ring.until = now + COUNTDOWN_MS
-    ring.hp = [MAX_HP, MAX_HP]
-  }
-  return { ok: true, events }
-}
-
-/**
- * A player steps out of ring `index`, or drops off the server. During a fight (or
- * its countdown) that is a forfeit; otherwise they are simply gone.
+ * A player drops off the server: off any pad, and out of any fight - a forfeit if it
+ * had started, a cancelled fight if it was still counting down.
  * @returns {object[]} events for the lobby
  */
-function leave(rings, index, id, now) {
-  const ring = rings[index]
-  if (!ring) return []
+function leave(rings, id, now) {
+  const [padRing, padSlot] = padOf(rings, id)
+  if (padRing >= 0) rings[padRing].pads[padSlot] = null
+  const [index, ring] = ringOf(rings, id)
+  if (index < 0) return []
   const slot = slotOf(ring, id)
-  if (slot < 0) return []
-  if (ring.state === 'fight') return [knockOut(rings, index, slot, now, true)]
-  if (ring.state === 'ko') {
-    // The loser leaving is expected (they are on their way to the lobby). The winner
-    // leaving early just ends the celebration.
-    ring.fighters[slot] = null
-    if (ring.ko?.winner === id) finishKo(ring)
-    return []
-  }
-  ring.fighters[slot] = null
-  ring.hp[slot] = MAX_HP
+  if (ring.state === 'fight') return [finish(rings, index, slot, now, 'forfeit')]
   if (ring.state === 'countdown') {
-    // Nobody had thrown a punch yet: no winner, the other fighter just waits again.
+    const other = ring.fighters[1 - slot]
+    ring.fighters = [null, null]
     ring.state = 'open'
     ring.until = 0
+    return [{ type: 'cancel', ring: index, fighters: [other] }]
   }
+  if (ring.state === 'ko') ring.fighters[slot] = null
   return []
-}
-
-/** Clears a finished knockout: the loser is out, the winner (if still here) waits on. */
-function finishKo(ring) {
-  const loser = ring.ko?.loser
-  if (loser) {
-    const slot = slotOf(ring, loser)
-    if (slot >= 0) ring.fighters[slot] = null
-  }
-  ring.hp = [MAX_HP, MAX_HP]
-  ring.state = 'open'
-  ring.until = 0
-  ring.ko = null
 }
 
 /**
  * A punch from `attacker` in ring `index`. `players` maps ids to records with a `p`
- * position. Returns the events it caused: nothing (not fighting, too soon, out of
- * reach), a hit, or a hit and a knockout.
+ * position. Returns the events it caused: nothing (not fighting, too soon), a miss
+ * (out of reach), a hit, or a hit and a knockout.
  */
 function punch(rings, index, attacker, power, players, now) {
   const ring = rings[index]
@@ -217,33 +237,49 @@ function punch(rings, index, attacker, power, players, now) {
   const damage = damageFor(ring.power[slot], ring.power[other])
   ring.hp[other] = Math.max(0, Math.round((ring.hp[other] - damage) * 100) / 100)
   const events = [{ type: 'hit', ring: index, from: attacker, to: ring.fighters[other], damage, hp: [...ring.hp] }]
-  if (ring.hp[other] <= 0) events.push(knockOut(rings, index, other, now))
+  if (ring.hp[other] <= 0) events.push(finish(rings, index, other, now, 'ko'))
   return events
 }
 
 /**
- * Moves every ring's clock on: countdowns into fights, finished knockouts back to
- * open. Returns whether anything changed (so the lobby is sent a fresh snapshot).
+ * Moves every ring's clock on: countdowns into fights, fights that ran out of time
+ * to a decision, finished knockouts back to open - and then, if two are waiting on
+ * the pads, straight into the next fight. Returns `{ changed, events }`.
  */
 function tick(rings, now) {
   let changed = false
-  for (const ring of rings) {
+  const events = []
+  rings.forEach((ring, index) => {
     if (ring.state === 'countdown' && now >= ring.until) {
       ring.state = 'fight'
-      ring.until = 0
+      ring.until = now + ROUND_MS
+      changed = true
+    } else if (ring.state === 'fight' && now >= ring.until) {
+      const [a, b] = ring.hp
+      events.push(finish(rings, index, a === b ? -1 : a < b ? 0 : 1, now, 'decision'))
       changed = true
     } else if (ring.state === 'ko' && now >= ring.until) {
-      finishKo(ring)
+      ring.fighters = [null, null]
+      ring.hp = [MAX_HP, MAX_HP]
+      ring.state = 'open'
+      ring.until = 0
+      ring.ko = null
       changed = true
     }
-  }
-  return changed
+    const start = tryStart(rings, index, now)
+    if (start) {
+      events.push(start)
+      changed = true
+    }
+  })
+  return { changed, events }
 }
 
 /** What everyone is told about the rings: compact, and with no clocks but "how long". */
 function snapshot(rings, now) {
   return rings.map((ring) => ({
     f: [...ring.fighters],
+    p: [...ring.pads],
     hp: [...ring.hp],
     s: ring.state,
     t: ring.until ? Math.max(0, ring.until - now) : 0,
@@ -252,8 +288,10 @@ function snapshot(rings, now) {
 
 module.exports = {
   RINGS,
+  PAD_OFFSET,
   MAX_HP,
   COUNTDOWN_MS,
+  ROUND_MS,
   KO_MS,
   BASE_DAMAGE,
   REACH,
@@ -261,7 +299,10 @@ module.exports = {
   damageFor,
   rewardFor,
   ringOf,
-  enter,
+  padOf,
+  padAt,
+  padEnter,
+  padLeave,
   leave,
   punch,
   tick,

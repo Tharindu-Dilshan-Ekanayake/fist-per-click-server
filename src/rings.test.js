@@ -3,39 +3,68 @@ const assert = require('node:assert/strict')
 
 const rings = require('./rings')
 
-const RING = rings.RINGS[1]
-/** A player standing on ring 1's canvas, `dx` from its middle. */
-const fighter = (id, dx = 0) => ({ id, p: [RING.x + dx, 2, RING.z] })
+/** A player standing on ring `r`'s pad `slot`. */
+const onPad = (id, r = 1, slot = 0) => {
+  const [x, z] = rings.padAt(r, slot)
+  return { id, p: [x, 1, z] }
+}
+/** Where a fighter stands in ring 1 once the fight is on. */
+const inRing = (player, dx) => {
+  player.p = [rings.RINGS[1].x + dx, 2, rings.RINGS[1].z]
+  return player
+}
 
-/** Two fighters in ring 1, through the countdown and into the fight. */
+/** Two players onto ring 1's pads, through the countdown and into the fight. */
 function fightingPair(powerA = 100, powerB = 100) {
   const all = rings.createRings()
-  const a = fighter('a', -1)
-  const b = fighter('b', 1)
-  assert.equal(rings.enter(all, 1, a, powerA, 0).ok, true)
-  assert.equal(rings.enter(all, 1, b, powerB, 0).ok, true)
+  const a = onPad('a', 1, 0)
+  const b = onPad('b', 1, 1)
+  assert.equal(rings.padEnter(all, 1, 0, a, powerA, 0).ok, true)
+  const started = rings.padEnter(all, 1, 1, b, powerB, 0)
+  assert.equal(started.ok, true)
+  assert.deepEqual(started.events[0], { type: 'start', ring: 1, fighters: ['a', 'b'] })
   assert.equal(all[1].state, 'countdown')
+  assert.deepEqual(all[1].pads, [null, null])
   rings.tick(all, rings.COUNTDOWN_MS)
   assert.equal(all[1].state, 'fight')
+  inRing(a, -1.3)
+  inRing(b, 1.3)
   return { all, players: new Map([['a', a], ['b', b]]) }
 }
 
-test('one fighter waits; a second starts the countdown; a third is turned away', () => {
+test('one on a pad waits; the second starts the fight; a taken pad is refused', () => {
   const all = rings.createRings()
-  assert.equal(rings.enter(all, 1, fighter('a'), 10, 0).ok, true)
+  assert.equal(rings.padEnter(all, 1, 0, onPad('a', 1, 0), 10, 0).ok, true)
   assert.equal(all[1].state, 'open')
-  assert.equal(rings.enter(all, 1, fighter('b'), 10, 0).ok, true)
+  const taken = rings.padEnter(all, 1, 0, onPad('c', 1, 0), 10, 0)
+  assert.equal(taken.ok, false)
+  assert.equal(taken.reason, 'taken')
+  assert.equal(rings.padEnter(all, 1, 1, onPad('b', 1, 1), 10, 0).ok, true)
   assert.equal(all[1].state, 'countdown')
-  const third = rings.enter(all, 1, fighter('c'), 10, 0)
-  assert.equal(third.ok, false)
-  assert.equal(third.reason, 'full')
+  assert.deepEqual(all[1].fighters, ['a', 'b'])
 })
 
-test('you have to be standing in the ring to step into it', () => {
+test('you have to be standing on the pad to take it', () => {
   const all = rings.createRings()
-  const result = rings.enter(all, 1, { id: 'far', p: [0, 2, 0] }, 10, 0)
+  const result = rings.padEnter(all, 1, 0, { id: 'far', p: [0, 1, 0] }, 10, 0)
   assert.equal(result.ok, false)
   assert.equal(result.reason, 'not here')
+})
+
+test('the next two wait on the pads while a fight is on, and go in when it ends', () => {
+  const { all, players } = fightingPair(1000, 1)
+  assert.equal(rings.padEnter(all, 1, 0, onPad('c', 1, 0), 10, 5000).ok, true)
+  assert.equal(rings.padEnter(all, 1, 1, onPad('d', 1, 1), 10, 5000).ok, true)
+  assert.equal(all[1].state, 'fight')
+  let now = rings.COUNTDOWN_MS
+  for (let i = 0; i < 40 && all[1].state === 'fight'; i++) {
+    now += 200
+    rings.punch(all, 1, 'a', 1000, players, now)
+  }
+  assert.equal(all[1].state, 'ko')
+  const { events } = rings.tick(all, now + rings.KO_MS)
+  assert.deepEqual(events.map((e) => e.type), ['start'])
+  assert.deepEqual(all[1].fighters, ['c', 'd'])
 })
 
 test('the stronger fist does more damage, equal fists the base', () => {
@@ -57,13 +86,12 @@ test('punches land within reach, and enough of them knock out', () => {
   assert.ok(ko, 'b should be down')
   assert.equal(ko.winner, 'a')
   assert.equal(ko.loser, 'b')
+  assert.equal(ko.reason, 'ko')
   assert.ok(ko.reward >= 5)
-  assert.equal(all[1].state, 'ko')
-  // The knockout plays out, then the winner waits on at full health.
+  // The knockout plays out, then both are out and the ring is open again.
   rings.tick(all, now + rings.KO_MS)
   assert.equal(all[1].state, 'open')
-  assert.deepEqual(all[1].fighters, ['a', null])
-  assert.deepEqual(all[1].hp, [rings.MAX_HP, rings.MAX_HP])
+  assert.deepEqual(all[1].fighters, [null, null])
 })
 
 test('punches too fast or out of reach do nothing', () => {
@@ -71,41 +99,44 @@ test('punches too fast or out of reach do nothing', () => {
   const now = rings.COUNTDOWN_MS + 1000
   assert.equal(rings.punch(all, 1, 'a', 100, players, now)[0].type, 'hit')
   assert.deepEqual(rings.punch(all, 1, 'a', 100, players, now + 10), [])
-  players.get('b').p = [RING.x + rings.REACH + 2, 2, RING.z]
+  inRing(players.get('b'), rings.REACH + 2)
   assert.equal(rings.punch(all, 1, 'a', 100, players, now + 500)[0].type, 'miss')
 })
 
-test('nobody punches during the countdown', () => {
-  const all = rings.createRings()
-  const players = new Map([['a', fighter('a')], ['b', fighter('b')]])
-  rings.enter(all, 1, players.get('a'), 10, 0)
-  rings.enter(all, 1, players.get('b'), 10, 0)
-  assert.deepEqual(rings.punch(all, 1, 'a', 10, players, 1000), [])
+test('a fight that runs out of time goes to whoever has more health', () => {
+  const { all, players } = fightingPair()
+  rings.punch(all, 1, 'b', 100, players, rings.COUNTDOWN_MS + 100)
+  const { events } = rings.tick(all, rings.COUNTDOWN_MS + rings.ROUND_MS + 1)
+  assert.equal(events[0].type, 'ko')
+  assert.equal(events[0].reason, 'decision')
+  assert.equal(events[0].winner, 'b')
 })
 
-test('walking out of a fight is a forfeit; out of a countdown it is not', () => {
+test('dropping out of a fight is a forfeit; out of a countdown it is not', () => {
   const { all } = fightingPair()
-  const events = rings.leave(all, 1, 'b', 5000)
+  const events = rings.leave(all, 'b', 5000)
   assert.equal(events[0].type, 'ko')
   assert.equal(events[0].winner, 'a')
-  assert.equal(events[0].forfeit, true)
+  assert.equal(events[0].reason, 'forfeit')
 
   const calm = rings.createRings()
-  rings.enter(calm, 1, fighter('a'), 10, 0)
-  rings.enter(calm, 1, fighter('b'), 10, 0)
-  assert.deepEqual(rings.leave(calm, 1, 'b', 100), [])
+  rings.padEnter(calm, 1, 0, onPad('a', 1, 0), 10, 0)
+  rings.padEnter(calm, 1, 1, onPad('b', 1, 1), 10, 0)
+  const cancel = rings.leave(calm, 'b', 100)
+  assert.equal(cancel[0].type, 'cancel')
   assert.equal(calm[1].state, 'open')
-  assert.deepEqual(calm[1].fighters, ['a', null])
+  assert.deepEqual(calm[1].fighters, [null, null])
 })
 
 test('the snapshot says who is where and how long is left', () => {
   const all = rings.createRings()
-  rings.enter(all, 1, fighter('a'), 10, 0)
-  rings.enter(all, 1, fighter('b'), 10, 0)
-  const snap = rings.snapshot(all, 1000)
+  rings.padEnter(all, 1, 0, onPad('a', 1, 0), 10, 0)
+  let snap = rings.snapshot(all, 0)
+  assert.deepEqual(snap[1].p, ['a', null])
+  rings.padEnter(all, 1, 1, onPad('b', 1, 1), 10, 0)
+  snap = rings.snapshot(all, 1000)
   assert.equal(snap.length, rings.RINGS.length)
   assert.deepEqual(snap[1].f, ['a', 'b'])
   assert.equal(snap[1].s, 'countdown')
   assert.equal(snap[1].t, rings.COUNTDOWN_MS - 1000)
-  assert.deepEqual(snap[0].f, [null, null])
 })

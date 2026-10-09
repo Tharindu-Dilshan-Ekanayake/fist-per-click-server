@@ -13,26 +13,28 @@ const rings = require('./rings')
  * pool underneath, and its ping/pong keeps dead connections reaped for us.
  *
  * Protocol: joining a room carries the profile (name/avatar/glove/pet/trainer/
- * footprints) as the join options. Everything else is a typed message:
+ * footprints/aura/level) as the join options. Everything else is a typed message:
  *
  *   client -> server
- *     'profile'   { name, avatar, glove, pet, trainer, footprints }  any of these changed
+ *     'profile'   { name, avatar, glove, pet, trainer, footprints, aura, level }  any changed
  *     'state'     { p: [x, y, z], sw, ts }  own position; sw counts punches thrown,
  *                                           ts is the sender's clock in ms
- *     'ringEnter' { r, power }   stepped onto ring r's canvas (power: Strength)
- *     'ringLeave' { r }          stepped off it
- *     'ringPunch' { r, power }   threw a punch in it
+ *     'padEnter'  { r, slot, power }   stepped onto ring r's pad (0 red, 1 blue)
+ *     'padLeave'  { r, slot }          stepped off it
+ *     'ringPunch' { r, power }         threw a punch in the ring (power: Strength)
  *
  *   server -> client
- *     'welcome'  { id, lobby: { id, name, max }, players: [player...], rings }
+ *     'welcome'    { id, lobby: { id, name, max }, players: [player...], rings }
  *     'join' { player }   'leave' { id }
- *     'profile'  { id, name, avatar, glove, pet, trainer, footprints }
- *     'states'   { s: [[id, x, y, z, sw, ts], ...] }   everyone who moved, 20/s
- *     'rings'    { rings: [{ f: [id|null, id|null], hp: [a, b], s: state, t: ms }] }
- *     'ringHit'  { r, from, to, d, hp }          a punch landed
- *     'ringKO'   { r, winner, loser, reward, forfeit }
- *     'ringMiss' { r }                           (to the puncher) out of reach
- *     'ringDeny' { r, reason }                   (to one player) you can't step in
+ *     'profile'    { id, name, avatar, glove, pet, trainer, footprints, aura, level }
+ *     'states'     { s: [[id, x, y, z, sw, ts], ...] }   everyone who moved, 20/s
+ *     'rings'      { rings: [{ f: [id|null, id|null], p: [id|null, id|null], hp, s, t }] }
+ *     'ringStart'  { r, f }                        two off the pads and into the ring
+ *     'ringCancel' { r, f }                        a fighter dropped before it started
+ *     'ringHit'    { r, from, to, d, hp }          a punch landed
+ *     'ringKO'     { r, winner, loser, reward, reason, draw, f }
+ *     'ringMiss'   { r }                           (to the puncher) out of reach
+ *     'ringDeny'   { r, slot, reason }             (to one player) can't take that pad
  *
  * The rings' rules are in rings.js.
  */
@@ -45,6 +47,8 @@ const GLOVE_MAX = 32
 const PET_MAX = 32
 const TRAINER_MAX = 32
 const FOOTPRINTS_MAX = 32
+const AURA_MAX = 32
+const LEVEL_MAX = 1000
 /** Positions outside this box are rejected as garbage. */
 const WORLD_LIMIT = 10000
 /**
@@ -62,12 +66,14 @@ function readProfile(message) {
   const pet = typeof message?.pet === 'string' ? message.pet.slice(0, PET_MAX) : null
   const trainer = typeof message?.trainer === 'string' ? message.trainer.slice(0, TRAINER_MAX) : null
   const footprints = typeof message?.footprints === 'string' ? message.footprints.slice(0, FOOTPRINTS_MAX) : null
+  const aura = typeof message?.aura === 'string' ? message.aura.slice(0, AURA_MAX) : null
+  const level = Number.isInteger(message?.level) && message.level >= 1 ? Math.min(message.level, LEVEL_MAX) : 1
   let avatar = null
   if (message?.avatar && typeof message.avatar === 'object') {
     const size = JSON.stringify(message.avatar).length
     if (size <= MAX_AVATAR_BYTES) avatar = message.avatar
   }
-  return { name: name || 'Player', avatar, glove, pet, trainer, footprints }
+  return { name: name || 'Player', avatar, glove, pet, trainer, footprints, aura, level }
 }
 
 /** `[x, y, z]` rounded to centimetres, or null if it isn't a sane position. */
@@ -91,6 +97,8 @@ function publicPlayer(player) {
     pet: player.pet,
     trainer: player.trainer,
     footprints: player.footprints,
+    aura: player.aura,
+    level: player.level,
     p: player.p,
     sw: player.sw,
   }
@@ -98,6 +106,8 @@ function publicPlayer(player) {
 
 /** A ring index from a message, or -1. */
 const readRing = (value) => (Number.isInteger(value) && value >= 0 && value < rings.RINGS.length ? value : -1)
+/** A pad (0 red, 1 blue) from a message, or -1. */
+const readSlot = (value) => (value === 0 || value === 1 ? value : -1)
 
 function lobbyInfo(lobby, manager) {
   return { id: lobby.id, name: lobby.name, max: manager.maxPlayers }
@@ -150,34 +160,36 @@ class LobbyRoom extends colyseus.Room {
             pet: player.pet,
             trainer: player.trainer,
             footprints: player.footprints,
+            aura: player.aura,
+            level: player.level,
           },
           player,
         )
       }
     })
 
-    this.onMessage('ringEnter', (client, message) => {
+    this.onMessage('padEnter', (client, message) => {
       const player = this.playerFor(client)
       const r = readRing(message?.r)
-      if (!player || r < 0 || overRate(player)) return
+      const slot = readSlot(message?.slot)
+      if (!player || r < 0 || slot < 0 || overRate(player)) return
       const lobby = this.lobbies.lobbyOf(player.id)
-      const result = rings.enter(this.ringsOf(lobby), r, player, message?.power, Date.now())
+      const result = rings.padEnter(this.ringsOf(lobby), r, slot, player, message?.power, Date.now())
       if (!result.ok) {
-        client.send('ringDeny', { r, reason: result.reason })
+        client.send('ringDeny', { r, slot, reason: result.reason })
         return
       }
       this.tellRingEvents(lobby, result.events)
       this.tellRings(lobby)
     })
 
-    this.onMessage('ringLeave', (client, message) => {
+    this.onMessage('padLeave', (client, message) => {
       const player = this.playerFor(client)
       const r = readRing(message?.r)
-      if (!player || r < 0 || overRate(player)) return
+      const slot = readSlot(message?.slot)
+      if (!player || r < 0 || slot < 0 || overRate(player)) return
       const lobby = this.lobbies.lobbyOf(player.id)
-      const events = rings.leave(this.ringsOf(lobby), r, player.id, Date.now())
-      this.tellRingEvents(lobby, events)
-      this.tellRings(lobby)
+      if (rings.padLeave(this.ringsOf(lobby), r, slot, player.id)) this.tellRings(lobby)
     })
 
     this.onMessage('ringPunch', (client, message) => {
@@ -220,13 +232,15 @@ class LobbyRoom extends colyseus.Room {
   onLeave(client) {
     const player = this.playerFor(client)
     if (!player) return
-    // Out of any ring first: walking out of a fight by closing the tab is a forfeit.
+    // Off any pad and out of any ring first: leaving a fight by closing the tab is a
+    // forfeit.
     const current = this.lobbies.lobbyOf(player.id)
-    if (current) {
-      const all = this.ringsOf(current)
-      const [r] = rings.ringOf(all, player.id)
-      if (r >= 0) {
-        this.tellRingEvents(current, rings.leave(all, r, player.id, Date.now()))
+    if (current?.rings) {
+      const all = current.rings
+      const onPad = rings.padOf(all, player.id)[0] >= 0
+      const inRing = rings.ringOf(all, player.id)[0] >= 0
+      if (onPad || inRing) {
+        this.tellRingEvents(current, rings.leave(all, player.id, Date.now()), player)
         this.tellRings(current, player)
       }
     }
@@ -259,15 +273,19 @@ class LobbyRoom extends colyseus.Room {
     this.tellLobby(lobby, 'rings', { rings: rings.snapshot(this.ringsOf(lobby), Date.now()) }, except)
   }
 
-  /** Passes ring events on: hits and knockouts to the lobby, misses to the puncher. */
-  tellRingEvents(lobby, events) {
+  /** Passes ring events on: starts, hits and knockouts to the lobby, misses to the puncher. */
+  tellRingEvents(lobby, events, except = null) {
     for (const event of events) {
-      if (event.type === 'hit') {
+      if (event.type === 'start') {
+        this.tellLobby(lobby, 'ringStart', { r: event.ring, f: event.fighters }, except)
+      } else if (event.type === 'cancel') {
+        this.tellLobby(lobby, 'ringCancel', { r: event.ring, f: event.fighters }, except)
+      } else if (event.type === 'hit') {
         this.tellLobby(lobby, 'ringHit', { r: event.ring, from: event.from, to: event.to, d: event.damage, hp: event.hp })
       } else if (event.type === 'ko') {
-        const { ring, winner, loser, reward, forfeit } = event
-        this.tellLobby(lobby, 'ringKO', { r: ring, winner, loser, reward, forfeit })
-        console.log(`[ring] ${lobby.name} ring ${ring + 1}: ${winner} beat ${loser}${forfeit ? ' (forfeit)' : ''}`)
+        const { ring, winner, loser, reward, reason, draw, fighters } = event
+        this.tellLobby(lobby, 'ringKO', { r: ring, winner, loser, reward, reason, draw, f: fighters }, except)
+        console.log(`[ring] ${lobby.name} ring ${ring + 1}: ${draw ? 'draw' : `${winner} beat ${loser}`} (${reason})`)
       } else if (event.type === 'miss') {
         lobby.players.get(event.from)?.client.send('ringMiss', { r: event.ring })
       }
@@ -285,7 +303,11 @@ class LobbyRoom extends colyseus.Room {
   broadcastMoved() {
     const now = Date.now()
     for (const lobby of this.lobbies.lobbies.values()) {
-      if (lobby.rings && rings.tick(lobby.rings, now)) this.tellRings(lobby)
+      if (lobby.rings) {
+        const { changed, events } = rings.tick(lobby.rings, now)
+        if (events.length) this.tellRingEvents(lobby, events)
+        if (changed) this.tellRings(lobby)
+      }
       const moved = []
       for (const player of lobby.players.values()) {
         if (!player.moved) continue
